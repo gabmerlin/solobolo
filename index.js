@@ -119,10 +119,21 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
             // Préparer les permissions du salon
             // Personne ne peut voir le salon SAUF la personne connectée et le rôle spécifique
+            // IMPORTANT : L'ordre compte - les deny doivent être définis en premier pour bloquer les permissions supérieures
             const permissionOverwrites = [
                 {
                     id: guild.roles.everyone.id, // @everyone
                     deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect], // Invisible pour tout le monde
+                },
+                {
+                    id: '1344774671987642428', // Rôle qui ne doit PAS voir les salons - EN PREMIER pour bloquer toutes ses permissions
+                    deny: [
+                        PermissionFlagsBits.ViewChannel,
+                        PermissionFlagsBits.Connect,
+                        PermissionFlagsBits.Speak,
+                        PermissionFlagsBits.SendMessages,
+                        PermissionFlagsBits.ReadMessageHistory
+                    ], // Blocage complet - même si le rôle a des permissions au niveau serveur
                 },
                 {
                     id: member.id, // Le propriétaire du salon
@@ -131,10 +142,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 {
                     id: '1353435878659330130', // Rôle spécifique qui peut voir le salon
                     allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect], // Peut voir et se connecter
-                },
-                {
-                    id: '1344774671987642428', // Rôle qui ne doit PAS voir les salons
-                    deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect], // Ne peut pas voir ni se connecter
                 }
             ];
 
