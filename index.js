@@ -366,16 +366,25 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                             
                             console.log(`🔒 Deny FORCÉ pour ${blockedRoleId} (ViewChannel, Connect, Speak, SendMessages, ReadMessageHistory)`);
                             
-                            // 3. Vérification immédiate
-                            await new Promise(resolve => setTimeout(resolve, 200));
+                            // 3. Vérification avec rafraîchissement du cache
+                            await new Promise(resolve => setTimeout(resolve, 500)); // Délai plus long pour Discord
+                            // Rafraîchir le cache du salon pour obtenir les dernières permissions
+                            await privateChannel.fetch(true).catch(() => {}); // Ignorer les erreurs
                             const verifyOverwrite = privateChannel.permissionOverwrites.cache.get(blockedRoleId);
                             if (verifyOverwrite) {
                                 const verifyDeny = verifyOverwrite.deny;
-                                if (verifyDeny && verifyDeny.has(PermissionFlagsBits.ViewChannel)) {
-                                    console.log(`✅ Vérification OK : Le rôle ${blockedRoleId} est bien bloqué`);
+                                // Vérifier si ViewChannel est dans les deny
+                                if (verifyDeny && (verifyDeny.has(PermissionFlagsBits.ViewChannel) || (verifyDeny.bitfield & PermissionFlagsBits.ViewChannel) === PermissionFlagsBits.ViewChannel)) {
+                                    console.log(`✅ Vérification OK : Le rôle ${blockedRoleId} est bien bloqué (deny: ${verifyDeny.bitfield.toString()})`);
                                 } else {
-                                    console.warn(`⚠️  ATTENTION : Le deny n'a peut-être pas été appliqué correctement pour ${blockedRoleId}`);
+                                    console.warn(`⚠️  ATTENTION : Le deny ViewChannel n'est pas détecté pour ${blockedRoleId}`);
+                                    console.warn(`   Deny bitfield actuel: ${verifyOverwrite.deny ? verifyOverwrite.deny.bitfield.toString() : 'null'}`);
+                                    console.warn(`   Allow bitfield actuel: ${verifyOverwrite.allow ? verifyOverwrite.allow.bitfield.toString() : 'null'}`);
+                                    // NOTE: Discord peut parfois ne pas appliquer les deny si le rôle a des permissions de catégorie/serveur
+                                    // Dans ce cas, le rôle pourrait quand même voir le salon malgré nos tentatives
                                 }
+                            } else {
+                                console.warn(`⚠️  ATTENTION : Overwrite non trouvé pour ${blockedRoleId} après création`);
                             }
                         } catch (finalDenyError) {
                             console.error(`❌ ERREUR CRITIQUE lors de la création forcée du deny pour ${overwrite.id}: ${finalDenyError.message}`);
@@ -400,25 +409,46 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                             
                             // Vérifier plusieurs fois (au cas où Discord met du temps à appliquer)
                             for (let attempt = 0; attempt < 3; attempt++) {
-                                await new Promise(resolve => setTimeout(resolve, 500)); // Délai entre chaque tentative
+                                await new Promise(resolve => setTimeout(resolve, 800)); // Délai plus long entre chaque tentative
+                                
+                                // Rafraîchir le cache du salon avant chaque vérification
+                                try {
+                                    await privateChannel.fetch(true);
+                                } catch (fetchError) {
+                                    // Le salon pourrait avoir été supprimé, on arrête les tentatives
+                                    console.log(`ℹ️  Salon supprimé, arrêt des vérifications arrière-plan`);
+                                    break;
+                                }
                                 
                                 const blockedRoleOverwrite = privateChannel.permissionOverwrites.cache.get(blockedRoleId);
                                 
                                 if (blockedRoleOverwrite) {
                                     const denyPerms = blockedRoleOverwrite.deny;
-                                    if (!denyPerms || !denyPerms.has(PermissionFlagsBits.ViewChannel)) {
+                                    // Vérifier plus robustement si ViewChannel est dans les deny
+                                    const hasViewChannelDeny = denyPerms && (
+                                        denyPerms.has(PermissionFlagsBits.ViewChannel) || 
+                                        (denyPerms.bitfield & PermissionFlagsBits.ViewChannel) === PermissionFlagsBits.ViewChannel
+                                    );
+                                    
+                                    if (!hasViewChannelDeny) {
                                         // Le deny n'est pas correctement appliqué - utiliser la stratégie agressive
                                         console.warn(`⚠️  Tentative ${attempt + 1}/3 : Le deny n'est pas correctement appliqué pour ${blockedRoleId}`);
+                                        console.warn(`   Deny bitfield: ${denyPerms ? denyPerms.bitfield.toString() : 'null'}`);
                                         try {
                                             // Supprimer puis recréer
                                             await blockedRoleOverwrite.delete();
-                                            await new Promise(resolve => setTimeout(resolve, 100));
+                                            await new Promise(resolve => setTimeout(resolve, 200));
                                             await privateChannel.permissionOverwrites.create(blockedRoleId, {
                                                 allow: 0n,
                                                 deny: fullDeny
                                             });
                                             console.log(`🔄 Deny FORCÉ en arrière-plan (tentative ${attempt + 1}/3) pour ${blockedRoleId}`);
                                         } catch (bgError) {
+                                            // Si le salon n'existe plus (utilisateur parti), on arrête
+                                            if (bgError.code === 10003) { // Unknown Channel
+                                                console.log(`ℹ️  Salon supprimé, arrêt des tentatives`);
+                                                break;
+                                            }
                                             console.warn(`⚠️  Erreur lors de la tentative ${attempt + 1}: ${bgError.message}`);
                                         }
                                     } else {
@@ -435,6 +465,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                                         });
                                         console.log(`🔄 Overwrite créé en arrière-plan pour ${blockedRoleId}`);
                                     } catch (bgError) {
+                                        // Si le salon n'existe plus, on arrête
+                                        if (bgError.code === 10003) {
+                                            console.log(`ℹ️  Salon supprimé, arrêt des tentatives`);
+                                            break;
+                                        }
                                         console.warn(`⚠️  Erreur lors de la création: ${bgError.message}`);
                                     }
                                 }
