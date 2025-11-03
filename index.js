@@ -151,41 +151,89 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             
             console.log(`🔧 Tentative de création du salon pour ${member.displayName}...`);
             
-            // Générer le nom du salon avec le compteur
-            const channelName = `💻-SESS° Chatting ${channelCounter}`;
+            // Chercher d'abord si un salon existant avec un numéro plus bas est vide
+            let existingEmptyChannel = null;
+            let lowestAvailableNumber = channelCounter;
             
-            // Étape 1 : Créer le salon SANS permissions personnalisées (plus simple)
-            try {
-                privateChannel = await guild.channels.create({
-                    name: channelName,
-                    type: ChannelType.GuildVoice,
-                    parent: categoryId || undefined, // Mettre dans la catégorie si elle existe
-                    userLimit: 1, // Limité à 1 personne
-                    // Pas de permissionOverwrites pour le moment
-                });
-                console.log(`✅ Salon créé : ${privateChannel.name} (ID: ${privateChannel.id})`);
-                // Incrémenter le compteur pour le prochain salon
-                channelCounter++;
-            } catch (categoryError) {
-                // Si ça échoue à cause de la catégorie, essayer sans catégorie
-                if (categoryError.code === 50013 && categoryId) {
-                    console.warn(`⚠️  Impossible de créer le salon dans la catégorie. Essai sans catégorie...`);
-                    try {
-                        privateChannel = await guild.channels.create({
-                            name: channelName,
-                            type: ChannelType.GuildVoice,
-                            userLimit: 1
-                        });
-                        console.log(`✅ Salon créé sans catégorie : ${privateChannel.name}`);
-                        // Incrémenter le compteur pour le prochain salon
-                        channelCounter++;
-                    } catch (rootError) {
-                        console.error(`❌ Erreur lors de la création (sans catégorie aussi):`, rootError.code, rootError.message);
-                        throw rootError;
+            // Chercher dans tous les salons vocaux de la guilde
+            const voiceChannels = guild.channels.cache.filter(ch => 
+                ch.type === ChannelType.GuildVoice && 
+                ch.name.startsWith('💻-SESS° Chatting ')
+            );
+            
+            // Extraire les numéros et trouver le salon vide avec le numéro le plus bas
+            for (const channel of voiceChannels.values()) {
+                const match = channel.name.match(/💻-SESS° Chatting (\d+)/);
+                if (match) {
+                    const channelNumber = parseInt(match[1]);
+                    
+                    // Vérifier si le salon est vide (pas de membres non-bots)
+                    const membersInChannel = channel.members.filter(m => !m.user.bot);
+                    
+                    if (membersInChannel.size === 0) {
+                        // C'est un salon vide, vérifier s'il a un numéro plus bas
+                        if (channelNumber < lowestAvailableNumber) {
+                            lowestAvailableNumber = channelNumber;
+                            existingEmptyChannel = channel;
+                        }
                     }
-                } else {
-                    console.error(`❌ Erreur lors de la création (avec catégorie):`, categoryError.code, categoryError.message);
-                    throw categoryError;
+                }
+            }
+            
+            let privateChannel;
+            
+            // Si on a trouvé un salon vide avec un numéro plus bas, le réutiliser
+            if (existingEmptyChannel) {
+                console.log(`♻️  Réutilisation du salon existant vide : ${existingEmptyChannel.name}`);
+                privateChannel = existingEmptyChannel;
+                
+                // Vérifier si ce salon est déjà dans la map et le retirer (il devrait être vide)
+                for (const [userId, channelId] of activePrivateChannels.entries()) {
+                    if (channelId === existingEmptyChannel.id) {
+                        activePrivateChannels.delete(userId);
+                        console.log(`   🗑️  Salon retiré de la map (était associé à un utilisateur qui a quitté)`);
+                    }
+                }
+                
+                // Réappliquer les permissions pour être sûr qu'elles sont correctes
+                // (elles seront réappliquées plus loin dans le code)
+            } else {
+                // Générer le nom du salon avec le compteur
+                const channelName = `💻-SESS° Chatting ${channelCounter}`;
+                
+                // Étape 1 : Créer le salon SANS permissions personnalisées (plus simple)
+                try {
+                    privateChannel = await guild.channels.create({
+                        name: channelName,
+                        type: ChannelType.GuildVoice,
+                        parent: categoryId || undefined, // Mettre dans la catégorie si elle existe
+                        userLimit: 1, // Limité à 1 personne
+                        // Pas de permissionOverwrites pour le moment
+                    });
+                    console.log(`✅ Salon créé : ${privateChannel.name} (ID: ${privateChannel.id})`);
+                    // Incrémenter le compteur pour le prochain salon
+                    channelCounter++;
+                } catch (categoryError) {
+                    // Si ça échoue à cause de la catégorie, essayer sans catégorie
+                    if (categoryError.code === 50013 && categoryId) {
+                        console.warn(`⚠️  Impossible de créer le salon dans la catégorie. Essai sans catégorie...`);
+                        try {
+                            privateChannel = await guild.channels.create({
+                                name: channelName,
+                                type: ChannelType.GuildVoice,
+                                userLimit: 1
+                            });
+                            console.log(`✅ Salon créé sans catégorie : ${privateChannel.name}`);
+                            // Incrémenter le compteur pour le prochain salon
+                            channelCounter++;
+                        } catch (rootError) {
+                            console.error(`❌ Erreur lors de la création (sans catégorie aussi):`, rootError.code, rootError.message);
+                            throw rootError;
+                        }
+                    } else {
+                        console.error(`❌ Erreur lors de la création (avec catégorie):`, categoryError.code, categoryError.message);
+                        throw categoryError;
+                    }
                 }
             }
             
