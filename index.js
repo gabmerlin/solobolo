@@ -180,8 +180,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 }
             }
             
-            let privateChannel;
-            
             // Si on a trouvé un salon vide avec un numéro plus bas, le réutiliser
             if (existingEmptyChannel) {
                 console.log(`♻️  Réutilisation du salon existant vide : ${existingEmptyChannel.name}`);
