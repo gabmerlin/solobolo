@@ -322,51 +322,55 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                         }
                     }
                     
-                    // Attendre et rafraîchir plusieurs fois pour être sûr que Discord a bien appliqué les deny
+                    // Attendre et vérifier que les deny sont bien appliqués
                     // Les deny au niveau du salon doivent overrider les permissions de catégorie
                     console.log(`🔄 Vérification finale des deny appliqués...`);
-                    for (let i = 0; i < 3; i++) {
-                        await new Promise(resolve => setTimeout(resolve, 800)); // Attendre 800ms entre chaque vérification
-                        await privateChannel.fetch(); // Rafraîchir le salon
+                    
+                    // Attendre un peu plus longtemps pour que Discord synchronise
+                    await new Promise(resolve => setTimeout(resolve, 2000)); // 2 secondes
+                    
+                    // Rafraîchir complètement le salon depuis l'API
+                    const refreshedChannel = await guild.channels.fetch(privateChannel.id, { force: true });
+                    const blockedRoleOverwrite = refreshedChannel.permissionOverwrites.cache.get('1344774671987642428');
+                    
+                    if (blockedRoleOverwrite) {
+                        const denyPerms = blockedRoleOverwrite.deny;
+                        const allowPerms = blockedRoleOverwrite.allow;
                         
-                        const blockedRoleOverwrite = privateChannel.permissionOverwrites.cache.get('1344774671987642428');
-                        if (blockedRoleOverwrite) {
-                            const denyPerms = blockedRoleOverwrite.deny;
-                            const hasViewChannelDeny = denyPerms && denyPerms.has(PermissionFlagsBits.ViewChannel);
-                            
-                            if (hasViewChannelDeny) {
-                                console.log(`✅ Le rôle bloqué (1344774671987642428) a bien les permissions deny - Le salon devrait être invisible pour ce rôle`);
-                                console.log(`   Les deny au niveau du salon overrident les permissions de catégorie ✅`);
-                                break; // Sortir de la boucle si les deny sont corrects
-                            } else {
-                                console.log(`⚠️  Tentative ${i + 1}/3 : Les deny ne sont pas encore appliqués (${denyPerms ? denyPerms.bitfield.toString() : 'aucune'})`);
-                                
-                                // Réappliquer les deny à chaque tentative
-                                try {
-                                    const fullDeny = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect | PermissionFlagsBits.Speak;
-                                    await blockedRoleOverwrite.edit({
-                                        allow: 0n,
-                                        deny: fullDeny
-                                    });
-                                    console.log(`   🔄 Deny réappliqués à la tentative ${i + 1}`);
-                                } catch (retryError) {
-                                    console.warn(`   ⚠️  Impossible de réappliquer: ${retryError.message}`);
-                                }
-                            }
+                        console.log(`   📊 État des permissions pour le rôle bloqué:`);
+                        console.log(`      Allow: ${allowPerms ? allowPerms.bitfield.toString() : '0'} (${allowPerms ? allowPerms.bitfield : '0n'})`);
+                        console.log(`      Deny: ${denyPerms ? denyPerms.bitfield.toString() : '0'} (${denyPerms ? denyPerms.bitfield : '0n'})`);
+                        
+                        // Vérifier si ViewChannel est dans deny
+                        const hasViewChannelDeny = denyPerms && denyPerms.has(PermissionFlagsBits.ViewChannel);
+                        
+                        if (hasViewChannelDeny) {
+                            console.log(`✅ Le rôle bloqué (1344774671987642428) a bien les permissions deny - Le salon devrait être invisible pour ce rôle`);
+                            console.log(`   Les deny au niveau du salon overrident les permissions de catégorie ✅`);
                         } else {
-                            // Si l'overwrite n'existe pas, le créer
-                            console.log(`⚠️  L'overwrite n'existe pas, création à la tentative ${i + 1}...`);
+                            console.warn(`⚠️  Les deny ne semblent pas persister malgré les tentatives`);
+                            console.warn(`   Cela peut être dû à:`);
+                            console.warn(`   1. Le rôle a "Gérer les salons" au niveau serveur/catégorie`);
+                            console.warn(`   2. Le rôle a des permissions administratives`);
+                            console.warn(`   3. Discord met du temps à synchroniser`);
+                            console.warn(`   💡 Vérifiez manuellement dans les paramètres du salon si les deny sont présents`);
+                            
+                            // Dernière tentative avec un délai plus long
+                            await new Promise(resolve => setTimeout(resolve, 1500));
                             try {
                                 const fullDeny = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect | PermissionFlagsBits.Speak;
-                                await privateChannel.permissionOverwrites.create('1344774671987642428', {
+                                await blockedRoleOverwrite.edit({
                                     allow: 0n,
                                     deny: fullDeny
                                 });
-                                console.log(`   ✅ Overwrite créé`);
-                            } catch (createError) {
-                                console.warn(`   ⚠️  Impossible de créer: ${createError.message}`);
+                                console.log(`🔄 Dernière tentative de réapplication des deny`);
+                            } catch (finalError) {
+                                console.error(`❌ Erreur lors de la dernière tentative: ${finalError.message}`);
                             }
                         }
+                    } else {
+                        console.error(`❌ L'overwrite pour le rôle bloqué n'existe toujours pas après toutes les tentatives`);
+                        console.error(`   💡 Il est possible que le rôle ait "Gérer les salons" qui empêche la création de l'overwrite`);
                     }
                     
                     if (successCount === permissionOverwrites.length) {
