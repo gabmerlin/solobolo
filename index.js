@@ -157,10 +157,14 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             let lowestEmptyNumber = Infinity;
             
             // Chercher dans tous les salons vocaux de la guilde
+            // IMPORTANT : Fetch les salons pour avoir les membres à jour
+            await guild.channels.fetch(); // Rafraîchir le cache
             const voiceChannels = guild.channels.cache.filter(ch => 
                 ch.type === ChannelType.GuildVoice && 
                 ch.name.startsWith('💻-SESS° Chatting ')
             );
+            
+            console.log(`🔍 Recherche de salons vides... (${voiceChannels.size} salons trouvés avec le pattern)`);
             
             // Extraire les numéros et trouver TOUS les salons vides, puis choisir le plus bas
             for (const channel of voiceChannels.values()) {
@@ -168,11 +172,22 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 if (match) {
                     const channelNumber = parseInt(match[1]);
                     
+                    // Rafraîchir le salon pour avoir les membres à jour
+                    try {
+                        await channel.fetch(true); // Force refresh
+                    } catch (fetchError) {
+                        // Si le salon n'existe plus, on continue
+                        continue;
+                    }
+                    
                     // Vérifier si le salon est vide (pas de membres non-bots)
                     const membersInChannel = channel.members.filter(m => !m.user.bot);
                     
+                    console.log(`   Salon ${channelNumber}: ${membersInChannel.size} membre(s) non-bot`);
+                    
                     if (membersInChannel.size === 0) {
                         // C'est un salon vide, garder celui avec le numéro le plus bas
+                        console.log(`   ✅ Salon ${channelNumber} est VIDE - candidat pour réutilisation`);
                         if (channelNumber < lowestEmptyNumber) {
                             lowestEmptyNumber = channelNumber;
                             existingEmptyChannel = channel;
@@ -181,8 +196,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 }
             }
             
-            // Si aucun salon vide trouvé, trouver le numéro le plus élevé utilisé pour créer le suivant
-            if (!existingEmptyChannel) {
+            if (existingEmptyChannel) {
+                console.log(`✅ Salon vide trouvé avec le numéro le plus bas : ${existingEmptyChannel.name}`);
+            } else {
+                console.log(`ℹ️  Aucun salon vide trouvé, création d'un nouveau salon`);
+                // Si aucun salon vide trouvé, trouver le numéro le plus élevé utilisé pour créer le suivant
                 let highestNumber = 0;
                 for (const channel of voiceChannels.values()) {
                     const match = channel.name.match(/💻-SESS° Chatting (\d+)/);
@@ -195,6 +213,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 }
                 // Le prochain salon sera le numéro suivant du plus élevé
                 channelCounter = highestNumber + 1;
+                console.log(`📊 Numéro le plus élevé existant : ${highestNumber}, prochain salon : ${channelCounter}`);
             }
             
             // Si on a trouvé un salon vide avec un numéro plus bas, le réutiliser
