@@ -83,7 +83,14 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
             // Récupérer la catégorie du salon déclencheur (si elle existe)
             const triggerChannel = await client.channels.fetch(triggerChannelId);
-            const categoryId = triggerChannel.parentId;
+            let categoryId = triggerChannel.parentId;
+            
+            // IMPORTANT : Si le rôle bloqué a des permissions au niveau de la catégorie,
+            // il verra toujours les salons même avec des deny au niveau du salon.
+            // Solution : Créer les salons SANS catégorie pour forcer les deny au niveau du salon
+            // (Les salons seront créés à la racine du serveur)
+            console.log(`ℹ️  Les salons privés seront créés sans catégorie pour éviter les permissions de catégorie qui override les deny`);
+            categoryId = null; // Forcer à null pour créer hors catégorie
 
             // Créer un nouveau salon vocal privé
             const guild = member.guild;
