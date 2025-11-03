@@ -202,10 +202,48 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                     console.warn(`⚠️  Le salon a été créé mais il n'est PAS privé !`);
                 } else {
                     // Appliquer les permissions une par une
+                    // IMPORTANT : Appliquer d'abord tous les deny (pour bloquer les permissions de catégorie)
+                    // Puis les allow (pour donner les permissions spécifiques)
                     let successCount = 0;
-                    for (const overwrite of permissionOverwrites) {
+                    
+                    // Séparer les deny et allow pour appliquer dans le bon ordre
+                    const denyOverwrites = permissionOverwrites.filter(o => o.deny && !o.allow);
+                    const allowOverwrites = permissionOverwrites.filter(o => o.allow);
+                    
+                    // D'abord appliquer tous les deny (pour bloquer les permissions de catégorie)
+                    for (const overwrite of denyOverwrites) {
                         try {
-                            // Convertir les tableaux de permissions en BigInt
+                            let denyBits = 0n;
+                            if (Array.isArray(overwrite.deny)) {
+                                denyBits = overwrite.deny.reduce((a, b) => a | b, 0n);
+                            } else {
+                                denyBits = overwrite.deny;
+                            }
+                            
+                            const existingOverwrite = privateChannel.permissionOverwrites.cache.get(overwrite.id);
+                            
+                            if (existingOverwrite) {
+                                await existingOverwrite.edit({
+                                    allow: null,
+                                    deny: denyBits
+                                });
+                            } else {
+                                await privateChannel.permissionOverwrites.create(overwrite.id, {
+                                    allow: null,
+                                    deny: denyBits
+                                });
+                            }
+                            
+                            console.log(`🔒 Permission DENY appliquée pour ${overwrite.id}`);
+                            successCount++;
+                        } catch (permError) {
+                            console.warn(`⚠️  Impossible d'appliquer la permission DENY (ID: ${overwrite.id}):`, permError.message);
+                        }
+                    }
+                    
+                    // Ensuite appliquer les allow
+                    for (const overwrite of allowOverwrites) {
+                        try {
                             let allowBits = 0n;
                             let denyBits = 0n;
                             
@@ -225,26 +263,35 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                                 }
                             }
                             
-                            // Vérifier si l'overwrite existe déjà
                             const existingOverwrite = privateChannel.permissionOverwrites.cache.get(overwrite.id);
                             
                             if (existingOverwrite) {
-                                // Si l'overwrite existe, utiliser edit
                                 await existingOverwrite.edit({
                                     allow: allowBits,
-                                    deny: denyBits
+                                    deny: denyBits || null
                                 });
                             } else {
-                                // Si l'overwrite n'existe pas, utiliser create
                                 await privateChannel.permissionOverwrites.create(overwrite.id, {
                                     allow: allowBits,
-                                    deny: denyBits
+                                    deny: denyBits || null
                                 });
                             }
                             
+                            console.log(`✅ Permission ALLOW appliquée pour ${overwrite.id}`);
                             successCount++;
                         } catch (permError) {
-                            console.warn(`⚠️  Impossible d'appliquer une permission (ID: ${overwrite.id}):`, permError.message);
+                            console.warn(`⚠️  Impossible d'appliquer la permission ALLOW (ID: ${overwrite.id}):`, permError.message);
+                        }
+                    }
+                    
+                    // Vérifier que les deny ont bien été appliqués
+                    const blockedRoleOverwrite = privateChannel.permissionOverwrites.cache.get('1344774671987642428');
+                    if (blockedRoleOverwrite) {
+                        const denyPerms = blockedRoleOverwrite.deny;
+                        if (denyPerms && denyPerms.has(PermissionFlagsBits.ViewChannel)) {
+                            console.log(`✅ Le rôle bloqué (1344774671987642428) a bien les permissions deny dans les paramètres du salon`);
+                        } else {
+                            console.warn(`⚠️  Le rôle bloqué n'a pas les permissions deny correctes - vérifiez les paramètres du salon`);
                         }
                     }
                     
