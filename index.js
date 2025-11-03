@@ -284,6 +284,31 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                         }
                     }
                     
+                    // IMPORTANT : Réappliquer les deny APRÈS tous les allow pour éviter qu'ils soient écrasés
+                    // et pour s'assurer qu'ils overrident les permissions de catégorie
+                    console.log(`🔄 Réapplication finale des deny pour bloquer les permissions de catégorie...`);
+                    for (const overwrite of denyOverwrites) {
+                        try {
+                            let denyBits = 0n;
+                            if (Array.isArray(overwrite.deny)) {
+                                denyBits = overwrite.deny.reduce((a, b) => a | b, 0n);
+                            } else {
+                                denyBits = overwrite.deny;
+                            }
+                            
+                            const existingOverwrite = privateChannel.permissionOverwrites.cache.get(overwrite.id);
+                            if (existingOverwrite) {
+                                await existingOverwrite.edit({
+                                    allow: 0n,
+                                    deny: denyBits
+                                });
+                                console.log(`🔒 Permission DENY réappliquée finalement pour ${overwrite.id}`);
+                            }
+                        } catch (finalDenyError) {
+                            console.warn(`⚠️  Impossible de réappliquer le deny final (ID: ${overwrite.id}):`, finalDenyError.message);
+                        }
+                    }
+                    
                     // Vérifier que les deny ont bien été appliqués - attendre un peu pour que Discord mette à jour le cache
                     await new Promise(resolve => setTimeout(resolve, 1000)); // Attendre 1 seconde
                     await privateChannel.fetch(); // Rafraîchir le salon pour mettre à jour les permissions
