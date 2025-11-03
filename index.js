@@ -284,14 +284,60 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                         }
                     }
                     
-                    // Vérifier que les deny ont bien été appliqués
+                    // Vérifier que les deny ont bien été appliqués - attendre un peu pour que Discord mette à jour le cache
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // Attendre 1 seconde
+                    await privateChannel.fetch(); // Rafraîchir le salon pour mettre à jour les permissions
+                    
+                    // Vérifier la hiérarchie des rôles - CRUCIAL pour que les deny fonctionnent
+                    const botRole = guild.members.me.roles.highest;
+                    const blockedRole = await guild.roles.fetch('1344774671987642428').catch(() => null);
+                    
+                    if (blockedRole && botRole) {
+                        if (botRole.position <= blockedRole.position) {
+                            console.error(`❌ PROBLÈME CRITIQUE : Le rôle du bot est en position ${botRole.position}, le rôle bloqué est en position ${blockedRole.position}`);
+                            console.error(`💡 Le rôle du bot DOIT être AU-DESSUS du rôle bloqué dans la hiérarchie !`);
+                            console.error(`   Allez dans Paramètres du serveur > Rôles`);
+                            console.error(`   Glissez le rôle du bot VERS LE HAUT (au-dessus du rôle ${blockedRole.name})`);
+                        } else {
+                            console.log(`✅ Hiérarchie OK : Bot (${botRole.position}) > Rôle bloqué (${blockedRole.position})`);
+                        }
+                    }
+                    
                     const blockedRoleOverwrite = privateChannel.permissionOverwrites.cache.get('1344774671987642428');
                     if (blockedRoleOverwrite) {
                         const denyPerms = blockedRoleOverwrite.deny;
                         if (denyPerms && denyPerms.has(PermissionFlagsBits.ViewChannel)) {
                             console.log(`✅ Le rôle bloqué (1344774671987642428) a bien les permissions deny dans les paramètres du salon`);
                         } else {
-                            console.warn(`⚠️  Le rôle bloqué n'a pas les permissions deny correctes - vérifiez les paramètres du salon`);
+                            console.warn(`⚠️  Le rôle bloqué n'a pas les permissions deny correctes`);
+                            console.warn(`   Deny permissions actuelles: ${denyPerms ? denyPerms.bitfield.toString() : 'aucune'}`);
+                            console.warn(`   💡 Vérifiez la hiérarchie des rôles - le bot doit être au-dessus du rôle bloqué !`);
+                            
+                            // Essayer de réappliquer les deny une fois de plus avec un délai
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            try {
+                                const fullDeny = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect | PermissionFlagsBits.Speak | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory;
+                                await blockedRoleOverwrite.edit({
+                                    allow: 0n,
+                                    deny: fullDeny
+                                });
+                                console.log(`🔄 Permissions deny réappliquées pour le rôle bloqué`);
+                            } catch (retryError) {
+                                console.warn(`⚠️  Impossible de réappliquer les deny: ${retryError.message}`);
+                            }
+                        }
+                    } else {
+                        console.error(`❌ Le rôle bloqué n'a pas été trouvé dans les permissions du salon !`);
+                        // Essayer de créer l'overwrite manuellement
+                        try {
+                            const fullDeny = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect | PermissionFlagsBits.Speak | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory;
+                            await privateChannel.permissionOverwrites.create('1344774671987642428', {
+                                allow: 0n,
+                                deny: fullDeny
+                            });
+                            console.log(`🔄 Overwrite créé manuellement pour le rôle bloqué`);
+                        } catch (manualError) {
+                            console.error(`❌ Impossible de créer l'overwrite manuellement: ${manualError.message}`);
                         }
                     }
                     
