@@ -199,21 +199,28 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             if (existingEmptyChannel) {
                 console.log(`✅ Salon vide trouvé avec le numéro le plus bas : ${existingEmptyChannel.name}`);
             } else {
-                console.log(`ℹ️  Aucun salon vide trouvé, création d'un nouveau salon`);
-                // Si aucun salon vide trouvé, trouver le numéro le plus élevé utilisé pour créer le suivant
-                let highestNumber = 0;
+                console.log(`ℹ️  Aucun salon vide trouvé, recherche du premier numéro manquant...`);
+                
+                // Collecter tous les numéros existants
+                const existingNumbers = new Set();
                 for (const channel of voiceChannels.values()) {
                     const match = channel.name.match(/💻-SESS° Chatting (\d+)/);
                     if (match) {
                         const channelNumber = parseInt(match[1]);
-                        if (channelNumber > highestNumber) {
-                            highestNumber = channelNumber;
-                        }
+                        existingNumbers.add(channelNumber);
                     }
                 }
-                // Le prochain salon sera le numéro suivant du plus élevé
-                channelCounter = highestNumber + 1;
-                console.log(`📊 Numéro le plus élevé existant : ${highestNumber}, prochain salon : ${channelCounter}`);
+                
+                // Trouver le premier numéro manquant en commençant par 1
+                let firstMissingNumber = 1;
+                while (existingNumbers.has(firstMissingNumber)) {
+                    firstMissingNumber++;
+                }
+                
+                // Utiliser le premier numéro manquant
+                channelCounter = firstMissingNumber;
+                console.log(`📊 Numéros existants : [${Array.from(existingNumbers).sort((a, b) => a - b).join(', ')}]`);
+                console.log(`📊 Premier numéro manquant : ${firstMissingNumber}, création du salon ${firstMissingNumber}`);
             }
             
             // Si on a trouvé un salon vide avec un numéro plus bas, le réutiliser
