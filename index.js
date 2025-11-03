@@ -298,8 +298,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                             } else {
                                 await privateChannel.permissionOverwrites.create(overwrite.id, { allow: 0n, deny: denyBits });
                             }
+                            return true;
                         } catch (error) {
-                            // Erreur silencieuse
+                            console.warn(`⚠️  Erreur deny pour ${overwrite.id}: ${error.message}`);
+                            return false;
                         }
                     });
                     
@@ -317,17 +319,20 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                             } else {
                                 await privateChannel.permissionOverwrites.create(overwrite.id, { allow: allowBits, deny: denyBits });
                             }
+                            return true;
                         } catch (error) {
-                            // Erreur silencieuse
+                            console.warn(`⚠️  Erreur allow pour ${overwrite.id}: ${error.message}`);
+                            return false;
                         }
                     });
                     
-                    // Ne pas attendre les allow - on peut déplacer l'utilisateur pendant ce temps
-                    allowPromises.forEach(p => p.catch(() => {})); // En arrière-plan
+                    // Attendre que les allow soient appliqués
+                    await Promise.all(allowPromises);
                     
-                    // IMPORTANT : Réappliquer les deny APRÈS tous les allow pour éviter qu'ils soient écrasés
-                    // Mais on le fait en parallèle pour ne pas bloquer
-                    const denyReapplyPromise = Promise.all(denyOverwrites.map(async (overwrite) => {
+                    // CRITIQUE : Stratégie agressive pour bloquer le rôle
+                    // On supprime puis recrée l'overwrite pour forcer le deny même si le rôle a des permissions de catégorie
+                    console.log(`🔄 Application finale et FORCÉE des deny pour bloquer le rôle...`);
+                    for (const overwrite of denyOverwrites) {
                         try {
                             let denyBits = 0n;
                             if (Array.isArray(overwrite.deny)) {
@@ -336,20 +341,47 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                                 denyBits = overwrite.deny;
                             }
                             
-                            const existingOverwrite = privateChannel.permissionOverwrites.cache.get(overwrite.id);
+                            const blockedRoleId = overwrite.id;
+                            
+                            // STRATÉGIE : Supprimer puis recréer l'overwrite pour forcer le deny
+                            const existingOverwrite = privateChannel.permissionOverwrites.cache.get(blockedRoleId);
+                            
+                            // 1. Supprimer l'overwrite existant s'il existe
                             if (existingOverwrite) {
-                                await existingOverwrite.edit({
-                                    allow: 0n,
-                                    deny: denyBits
-                                });
+                                try {
+                                    await existingOverwrite.delete();
+                                    console.log(`🗑️  Overwrite existant supprimé pour ${blockedRoleId}`);
+                                    // Attendre un peu pour que Discord traite la suppression
+                                    await new Promise(resolve => setTimeout(resolve, 100));
+                                } catch (deleteError) {
+                                    console.warn(`⚠️  Impossible de supprimer l'overwrite existant: ${deleteError.message}`);
+                                }
+                            }
+                            
+                            // 2. Recréer l'overwrite avec les deny forcés
+                            await privateChannel.permissionOverwrites.create(blockedRoleId, {
+                                allow: 0n, // Explicitement aucun allow
+                                deny: denyBits // Tous les deny nécessaires
+                            });
+                            
+                            console.log(`🔒 Deny FORCÉ pour ${blockedRoleId} (ViewChannel, Connect, Speak, SendMessages, ReadMessageHistory)`);
+                            
+                            // 3. Vérification immédiate
+                            await new Promise(resolve => setTimeout(resolve, 200));
+                            const verifyOverwrite = privateChannel.permissionOverwrites.cache.get(blockedRoleId);
+                            if (verifyOverwrite) {
+                                const verifyDeny = verifyOverwrite.deny;
+                                if (verifyDeny && verifyDeny.has(PermissionFlagsBits.ViewChannel)) {
+                                    console.log(`✅ Vérification OK : Le rôle ${blockedRoleId} est bien bloqué`);
+                                } else {
+                                    console.warn(`⚠️  ATTENTION : Le deny n'a peut-être pas été appliqué correctement pour ${blockedRoleId}`);
+                                }
                             }
                         } catch (finalDenyError) {
-                            // Erreur silencieuse - on continue
+                            console.error(`❌ ERREUR CRITIQUE lors de la création forcée du deny pour ${overwrite.id}: ${finalDenyError.message}`);
+                            console.error(`💡 Vérifiez que le rôle du bot est AU-DESSUS du rôle ${overwrite.id} dans la hiérarchie Discord`);
                         }
-                    }));
-                    
-                    // Ne pas attendre cette réapplication - elle se fera en arrière-plan
-                    denyReapplyPromise.catch(() => {}); // Ignorer les erreurs
+                    }
                     
                     // Vérifications optionnelles en arrière-plan (non-bloquant pour l'expérience utilisateur)
                     // Ces vérifications peuvent se faire après le déplacement de l'utilisateur
@@ -362,23 +394,48 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                                 console.error(`❌ PROBLÈME CRITIQUE : Le rôle du bot est en position ${botRole.position}, le rôle bloqué est en position ${blockedRole.position}`);
                             }
                             
-                            // Vérification rapide des deny (sans délai important)
-                            await new Promise(resolve => setTimeout(resolve, 300)); // Délai minimal
-                            const blockedRoleOverwrite = privateChannel.permissionOverwrites.cache.get('1344774671987642428');
+                            // Vérification agressive des deny en arrière-plan (plusieurs tentatives)
+                            const blockedRoleId = '1344774671987642428';
+                            const fullDeny = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect | PermissionFlagsBits.Speak | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory;
                             
-                            if (blockedRoleOverwrite) {
-                                const denyPerms = blockedRoleOverwrite.deny;
-                                if (!denyPerms || !denyPerms.has(PermissionFlagsBits.ViewChannel)) {
-                                    // Réappliquer les deny si nécessaire (en arrière-plan)
+                            // Vérifier plusieurs fois (au cas où Discord met du temps à appliquer)
+                            for (let attempt = 0; attempt < 3; attempt++) {
+                                await new Promise(resolve => setTimeout(resolve, 500)); // Délai entre chaque tentative
+                                
+                                const blockedRoleOverwrite = privateChannel.permissionOverwrites.cache.get(blockedRoleId);
+                                
+                                if (blockedRoleOverwrite) {
+                                    const denyPerms = blockedRoleOverwrite.deny;
+                                    if (!denyPerms || !denyPerms.has(PermissionFlagsBits.ViewChannel)) {
+                                        // Le deny n'est pas correctement appliqué - utiliser la stratégie agressive
+                                        console.warn(`⚠️  Tentative ${attempt + 1}/3 : Le deny n'est pas correctement appliqué pour ${blockedRoleId}`);
+                                        try {
+                                            // Supprimer puis recréer
+                                            await blockedRoleOverwrite.delete();
+                                            await new Promise(resolve => setTimeout(resolve, 100));
+                                            await privateChannel.permissionOverwrites.create(blockedRoleId, {
+                                                allow: 0n,
+                                                deny: fullDeny
+                                            });
+                                            console.log(`🔄 Deny FORCÉ en arrière-plan (tentative ${attempt + 1}/3) pour ${blockedRoleId}`);
+                                        } catch (bgError) {
+                                            console.warn(`⚠️  Erreur lors de la tentative ${attempt + 1}: ${bgError.message}`);
+                                        }
+                                    } else {
+                                        console.log(`✅ Vérification arrière-plan OK : Le rôle ${blockedRoleId} est bien bloqué (tentative ${attempt + 1}/3)`);
+                                        break; // C'est bon, on arrête les tentatives
+                                    }
+                                } else {
+                                    // L'overwrite n'existe pas - le créer
+                                    console.warn(`⚠️  Tentative ${attempt + 1}/3 : Overwrite manquant pour ${blockedRoleId}, création...`);
                                     try {
-                                        const fullDeny = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect | PermissionFlagsBits.Speak;
-                                        await blockedRoleOverwrite.edit({
+                                        await privateChannel.permissionOverwrites.create(blockedRoleId, {
                                             allow: 0n,
                                             deny: fullDeny
                                         });
-                                        console.log(`🔄 Deny réappliqués en arrière-plan pour le rôle bloqué`);
+                                        console.log(`🔄 Overwrite créé en arrière-plan pour ${blockedRoleId}`);
                                     } catch (bgError) {
-                                        // Ignorer silencieusement les erreurs en arrière-plan
+                                        console.warn(`⚠️  Erreur lors de la création: ${bgError.message}`);
                                     }
                                 }
                             }
