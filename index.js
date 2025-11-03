@@ -222,16 +222,16 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                             
                             const existingOverwrite = privateChannel.permissionOverwrites.cache.get(overwrite.id);
                             
+                            // Construire l'objet sans inclure null - utiliser 0n pour allow si nécessaire
+                            const permObject = {
+                                allow: 0n,  // Pas null, mais 0n pour dire "pas de permissions allow"
+                                deny: denyBits
+                            };
+                            
                             if (existingOverwrite) {
-                                await existingOverwrite.edit({
-                                    allow: null,
-                                    deny: denyBits
-                                });
+                                await existingOverwrite.edit(permObject);
                             } else {
-                                await privateChannel.permissionOverwrites.create(overwrite.id, {
-                                    allow: null,
-                                    deny: denyBits
-                                });
+                                await privateChannel.permissionOverwrites.create(overwrite.id, permObject);
                             }
                             
                             console.log(`🔒 Permission DENY appliquée pour ${overwrite.id}`);
@@ -265,16 +265,16 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                             
                             const existingOverwrite = privateChannel.permissionOverwrites.cache.get(overwrite.id);
                             
+                            // Construire l'objet - utiliser 0n au lieu de null
+                            const permObject = {
+                                allow: allowBits,
+                                deny: denyBits  // 0n si pas de deny
+                            };
+                            
                             if (existingOverwrite) {
-                                await existingOverwrite.edit({
-                                    allow: allowBits,
-                                    deny: denyBits || null
-                                });
+                                await existingOverwrite.edit(permObject);
                             } else {
-                                await privateChannel.permissionOverwrites.create(overwrite.id, {
-                                    allow: allowBits,
-                                    deny: denyBits || null
-                                });
+                                await privateChannel.permissionOverwrites.create(overwrite.id, permObject);
                             }
                             
                             console.log(`✅ Permission ALLOW appliquée pour ${overwrite.id}`);
