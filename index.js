@@ -235,7 +235,14 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 }
             }
             
+            // Déplacer l'utilisateur IMMÉDIATEMENT après la création du salon
+            // (sans attendre les permissions pour une réaction instantanée)
+            activePrivateChannels.set(member.id, privateChannel.id);
+            await member.voice.setChannel(privateChannel.id);
+            console.log(`✅ Utilisateur ${member.displayName} déplacé immédiatement dans ${privateChannel.name}`);
+            
             // Étape 2 : Modifier les permissions APRÈS la création pour rendre le salon privé
+            // (en parallèle, après avoir déplacé l'utilisateur)
             try {
                 console.log(`🔧 Configuration des permissions du salon...`);
                 
@@ -451,14 +458,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 console.error(`💡 Le salon déclencheur ne devrait jamais être supprimé !`);
                 return;
             }
-            
-            // Stocker le salon créé
-            activePrivateChannels.set(member.id, privateChannel.id);
 
-            // Déplacer l'utilisateur dans son nouveau salon
-            await member.voice.setChannel(privateChannel.id);
-
-            console.log(`✅ Salon créé pour ${member.displayName} (${member.id}) : ${privateChannel.name}`);
+            console.log(`✅ Salon créé et utilisateur déplacé pour ${member.displayName} (${member.id}) : ${privateChannel.name}`);
         } catch (error) {
             if (error.code === 50013) {
                 console.error(`\n❌ Erreur de permissions lors de la création du salon pour ${member.displayName}`);
