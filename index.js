@@ -131,6 +131,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 {
                     id: '1353435878659330130', // Rôle spécifique qui peut voir le salon
                     allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect], // Peut voir et se connecter
+                },
+                {
+                    id: '1344774671987642428', // Rôle qui ne doit PAS voir les salons
+                    deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect], // Ne peut pas voir ni se connecter
                 }
             ];
 
