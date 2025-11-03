@@ -151,9 +151,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             
             console.log(`🔧 Tentative de création du salon pour ${member.displayName}...`);
             
-            // Chercher d'abord si un salon existant avec un numéro plus bas est vide
+            // Chercher d'abord si un salon existant vide est disponible
+            // On cherche le salon vide avec le numéro le PLUS BAS possible (en commençant par 1)
             let existingEmptyChannel = null;
-            let lowestAvailableNumber = channelCounter;
+            let lowestEmptyNumber = Infinity;
             
             // Chercher dans tous les salons vocaux de la guilde
             const voiceChannels = guild.channels.cache.filter(ch => 
@@ -161,7 +162,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 ch.name.startsWith('💻-SESS° Chatting ')
             );
             
-            // Extraire les numéros et trouver le salon vide avec le numéro le plus bas
+            // Extraire les numéros et trouver TOUS les salons vides, puis choisir le plus bas
             for (const channel of voiceChannels.values()) {
                 const match = channel.name.match(/💻-SESS° Chatting (\d+)/);
                 if (match) {
@@ -171,13 +172,29 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                     const membersInChannel = channel.members.filter(m => !m.user.bot);
                     
                     if (membersInChannel.size === 0) {
-                        // C'est un salon vide, vérifier s'il a un numéro plus bas
-                        if (channelNumber < lowestAvailableNumber) {
-                            lowestAvailableNumber = channelNumber;
+                        // C'est un salon vide, garder celui avec le numéro le plus bas
+                        if (channelNumber < lowestEmptyNumber) {
+                            lowestEmptyNumber = channelNumber;
                             existingEmptyChannel = channel;
                         }
                     }
                 }
+            }
+            
+            // Si aucun salon vide trouvé, trouver le numéro le plus élevé utilisé pour créer le suivant
+            if (!existingEmptyChannel) {
+                let highestNumber = 0;
+                for (const channel of voiceChannels.values()) {
+                    const match = channel.name.match(/💻-SESS° Chatting (\d+)/);
+                    if (match) {
+                        const channelNumber = parseInt(match[1]);
+                        if (channelNumber > highestNumber) {
+                            highestNumber = channelNumber;
+                        }
+                    }
+                }
+                // Le prochain salon sera le numéro suivant du plus élevé
+                channelCounter = highestNumber + 1;
             }
             
             // Si on a trouvé un salon vide avec un numéro plus bas, le réutiliser
@@ -196,7 +213,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 // Réappliquer les permissions pour être sûr qu'elles sont correctes
                 // (elles seront réappliquées plus loin dans le code)
             } else {
-                // Générer le nom du salon avec le compteur
+                // Aucun salon vide trouvé - créer un nouveau salon
+                // Le compteur est déjà mis à jour avec le numéro suivant du plus élevé existant
                 const channelName = `💻-SESS° Chatting ${channelCounter}`;
                 
                 // Étape 1 : Créer le salon SANS permissions personnalisées (plus simple)
@@ -209,7 +227,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                         // Pas de permissionOverwrites pour le moment
                     });
                     console.log(`✅ Salon créé : ${privateChannel.name} (ID: ${privateChannel.id})`);
-                    // Incrémenter le compteur pour le prochain salon
+                    // Incrémenter le compteur pour le prochain salon créé
                     channelCounter++;
                 } catch (categoryError) {
                     // Si ça échoue à cause de la catégorie, essayer sans catégorie
@@ -222,7 +240,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                                 userLimit: 1
                             });
                             console.log(`✅ Salon créé sans catégorie : ${privateChannel.name}`);
-                            // Incrémenter le compteur pour le prochain salon
+                            // Incrémenter le compteur pour le prochain salon créé
                             channelCounter++;
                         } catch (rootError) {
                             console.error(`❌ Erreur lors de la création (sans catégorie aussi):`, rootError.code, rootError.message);
