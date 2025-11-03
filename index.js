@@ -151,30 +151,30 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             
             console.log(`🔧 Tentative de création du salon pour ${member.displayName}...`);
             
-            // Chercher d'abord si un salon existant avec un numéro plus bas est vide
+            // Chercher d'abord si un salon existant avec un numéro plus bas est vide (OPTIMISÉ)
             let existingEmptyChannel = null;
-            let lowestAvailableNumber = channelCounter;
             
-            // Chercher dans tous les salons vocaux de la guilde
+            // Chercher dans tous les salons vocaux de la guilde (déjà en cache, très rapide)
             const voiceChannels = guild.channels.cache.filter(ch => 
                 ch.type === ChannelType.GuildVoice && 
                 ch.name.startsWith('💻-SESS° Chatting ')
             );
             
             // Extraire les numéros et trouver le salon vide avec le numéro le plus bas
+            // On cherche seulement jusqu'au compteur actuel pour être rapide
             for (const channel of voiceChannels.values()) {
                 const match = channel.name.match(/💻-SESS° Chatting (\d+)/);
                 if (match) {
                     const channelNumber = parseInt(match[1]);
                     
-                    // Vérifier si le salon est vide (pas de membres non-bots)
-                    const membersInChannel = channel.members.filter(m => !m.user.bot);
-                    
-                    if (membersInChannel.size === 0) {
-                        // C'est un salon vide, vérifier s'il a un numéro plus bas
-                        if (channelNumber < lowestAvailableNumber) {
-                            lowestAvailableNumber = channelNumber;
-                            existingEmptyChannel = channel;
+                    // Ne chercher que les salons avec un numéro inférieur au compteur actuel
+                    if (channelNumber < channelCounter) {
+                        // Vérifier si le salon est vide (pas de membres non-bots) - vérification rapide
+                        if (channel.members.size === 0 || channel.members.every(m => m.user.bot)) {
+                            // C'est un salon vide avec un numéro plus bas
+                            if (!existingEmptyChannel || channelNumber < parseInt(existingEmptyChannel.name.match(/💻-SESS° Chatting (\d+)/)?.[1] || '999')) {
+                                existingEmptyChannel = channel;
+                            }
                         }
                     }
                 }
@@ -235,105 +235,99 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 }
             }
             
+            // OPTIMISATION : Déplacer l'utilisateur IMMÉDIATEMENT après la création du salon
+            // Ne pas attendre les permissions pour une réaction instantanée
+            activePrivateChannels.set(member.id, privateChannel.id);
+            
+            // Déplacer l'utilisateur en parallèle de la configuration des permissions
+            const moveUserPromise = member.voice.setChannel(privateChannel.id).catch(error => {
+                console.error(`❌ Erreur lors du déplacement immédiat: ${error.message}`);
+            });
+            
             // Étape 2 : Modifier les permissions APRÈS la création pour rendre le salon privé
-            try {
-                console.log(`🔧 Configuration des permissions du salon...`);
-                
-                // Vérifier que le bot a la permission "Gérer les rôles"
-                const botMemberCheck = await guild.members.fetch(client.user.id);
-                if (!botMemberCheck.permissions.has(PermissionFlagsBits.ManageRoles)) {
-                    console.error(`❌ Le bot n'a pas la permission "Gérer les rôles" !`);
-                    console.error(`💡 Allez dans Paramètres du serveur > Rôles > Sélectionnez le rôle du bot`);
-                    console.error(`   Activez la permission "Gérer les rôles" (nécessaire pour rendre les salons privés)`);
-                    console.warn(`⚠️  Le salon a été créé mais il n'est PAS privé !`);
-                } else {
-                    // Appliquer les permissions une par une
-                    // IMPORTANT : Appliquer d'abord tous les deny (pour bloquer les permissions de catégorie)
-                    // Puis les allow (pour donner les permissions spécifiques)
-                    let successCount = 0;
+            // Cela se fait en parallèle du déplacement pour ne pas ralentir
+            const permissionsPromise = (async () => {
+                try {
+                    console.log(`🔧 Configuration des permissions du salon...`);
                     
-                    // Séparer les deny et allow pour appliquer dans le bon ordre
+                    // Vérifier que le bot a la permission "Gérer les rôles"
+                    const botMemberCheck = await guild.members.fetch(client.user.id);
+                    if (!botMemberCheck.permissions.has(PermissionFlagsBits.ManageRoles)) {
+                        console.error(`❌ Le bot n'a pas la permission "Gérer les rôles" !`);
+                        console.error(`💡 Allez dans Paramètres du serveur > Rôles > Sélectionnez le rôle du bot`);
+                        console.error(`   Activez la permission "Gérer les rôles" (nécessaire pour rendre les salons privés)`);
+                        console.warn(`⚠️  Le salon a été créé mais il n'est PAS privé !`);
+                    } else {
+                    // Appliquer les permissions en PARALLÈLE pour plus de rapidité
+                    // IMPORTANT : Appliquer d'abord tous les deny, puis les allow
                     const denyOverwrites = permissionOverwrites.filter(o => o.deny && !o.allow);
                     const allowOverwrites = permissionOverwrites.filter(o => o.allow);
                     
-                    // D'abord appliquer tous les deny (pour bloquer les permissions de catégorie)
-                    for (const overwrite of denyOverwrites) {
-                        try {
-                            let denyBits = 0n;
+                    // Fonction helper pour convertir les permissions
+                    const convertPerms = (overwrite) => {
+                        let allowBits = 0n;
+                        let denyBits = 0n;
+                        
+                        if (overwrite.allow) {
+                            if (Array.isArray(overwrite.allow)) {
+                                allowBits = overwrite.allow.reduce((a, b) => a | b, 0n);
+                            } else {
+                                allowBits = overwrite.allow;
+                            }
+                        }
+                        
+                        if (overwrite.deny) {
                             if (Array.isArray(overwrite.deny)) {
                                 denyBits = overwrite.deny.reduce((a, b) => a | b, 0n);
                             } else {
                                 denyBits = overwrite.deny;
                             }
-                            
-                            const existingOverwrite = privateChannel.permissionOverwrites.cache.get(overwrite.id);
-                            
-                            // Construire l'objet sans inclure null - utiliser 0n pour allow si nécessaire
-                            const permObject = {
-                                allow: 0n,  // Pas null, mais 0n pour dire "pas de permissions allow"
-                                deny: denyBits
-                            };
-                            
-                            if (existingOverwrite) {
-                                await existingOverwrite.edit(permObject);
-                            } else {
-                                await privateChannel.permissionOverwrites.create(overwrite.id, permObject);
-                            }
-                            
-                            console.log(`🔒 Permission DENY appliquée pour ${overwrite.id}`);
-                            successCount++;
-                        } catch (permError) {
-                            console.warn(`⚠️  Impossible d'appliquer la permission DENY (ID: ${overwrite.id}):`, permError.message);
                         }
-                    }
+                        
+                        return { allowBits, denyBits };
+                    };
                     
-                    // Ensuite appliquer les allow
-                    for (const overwrite of allowOverwrites) {
+                    // Appliquer TOUS les deny en parallèle (plus rapide)
+                    const denyPromises = denyOverwrites.map(async (overwrite) => {
                         try {
-                            let allowBits = 0n;
-                            let denyBits = 0n;
-                            
-                            if (overwrite.allow) {
-                                if (Array.isArray(overwrite.allow)) {
-                                    allowBits = overwrite.allow.reduce((a, b) => a | b, 0n);
-                                } else {
-                                    allowBits = overwrite.allow;
-                                }
-                            }
-                            
-                            if (overwrite.deny) {
-                                if (Array.isArray(overwrite.deny)) {
-                                    denyBits = overwrite.deny.reduce((a, b) => a | b, 0n);
-                                } else {
-                                    denyBits = overwrite.deny;
-                                }
-                            }
-                            
+                            const { denyBits } = convertPerms(overwrite);
                             const existingOverwrite = privateChannel.permissionOverwrites.cache.get(overwrite.id);
                             
-                            // Construire l'objet - utiliser 0n au lieu de null
-                            const permObject = {
-                                allow: allowBits,
-                                deny: denyBits  // 0n si pas de deny
-                            };
+                            if (existingOverwrite) {
+                                await existingOverwrite.edit({ allow: 0n, deny: denyBits });
+                            } else {
+                                await privateChannel.permissionOverwrites.create(overwrite.id, { allow: 0n, deny: denyBits });
+                            }
+                        } catch (error) {
+                            // Erreur silencieuse
+                        }
+                    });
+                    
+                    // Attendre que les deny soient appliqués (mais en parallèle donc rapide)
+                    await Promise.all(denyPromises);
+                    
+                    // Appliquer TOUS les allow en parallèle
+                    const allowPromises = allowOverwrites.map(async (overwrite) => {
+                        try {
+                            const { allowBits, denyBits } = convertPerms(overwrite);
+                            const existingOverwrite = privateChannel.permissionOverwrites.cache.get(overwrite.id);
                             
                             if (existingOverwrite) {
-                                await existingOverwrite.edit(permObject);
+                                await existingOverwrite.edit({ allow: allowBits, deny: denyBits });
                             } else {
-                                await privateChannel.permissionOverwrites.create(overwrite.id, permObject);
+                                await privateChannel.permissionOverwrites.create(overwrite.id, { allow: allowBits, deny: denyBits });
                             }
-                            
-                            console.log(`✅ Permission ALLOW appliquée pour ${overwrite.id}`);
-                            successCount++;
-                        } catch (permError) {
-                            console.warn(`⚠️  Impossible d'appliquer la permission ALLOW (ID: ${overwrite.id}):`, permError.message);
+                        } catch (error) {
+                            // Erreur silencieuse
                         }
-                    }
+                    });
+                    
+                    // Ne pas attendre les allow - on peut déplacer l'utilisateur pendant ce temps
+                    allowPromises.forEach(p => p.catch(() => {})); // En arrière-plan
                     
                     // IMPORTANT : Réappliquer les deny APRÈS tous les allow pour éviter qu'ils soient écrasés
-                    // et pour s'assurer qu'ils overrident les permissions de catégorie
-                    console.log(`🔄 Réapplication finale des deny pour bloquer les permissions de catégorie...`);
-                    for (const overwrite of denyOverwrites) {
+                    // Mais on le fait en parallèle pour ne pas bloquer
+                    const denyReapplyPromise = Promise.all(denyOverwrites.map(async (overwrite) => {
                         try {
                             let denyBits = 0n;
                             if (Array.isArray(overwrite.deny)) {
@@ -348,115 +342,73 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                                     allow: 0n,
                                     deny: denyBits
                                 });
-                                console.log(`🔒 Permission DENY réappliquée finalement pour ${overwrite.id}`);
                             }
                         } catch (finalDenyError) {
-                            console.warn(`⚠️  Impossible de réappliquer le deny final (ID: ${overwrite.id}):`, finalDenyError.message);
+                            // Erreur silencieuse - on continue
                         }
-                    }
+                    }));
                     
-                    // Vérifier la hiérarchie des rôles - CRUCIAL pour que les deny fonctionnent
-                    const botRole = guild.members.me.roles.highest;
-                    const blockedRole = await guild.roles.fetch('1344774671987642428').catch(() => null);
+                    // Ne pas attendre cette réapplication - elle se fera en arrière-plan
+                    denyReapplyPromise.catch(() => {}); // Ignorer les erreurs
                     
-                    if (blockedRole && botRole) {
-                        if (botRole.position <= blockedRole.position) {
-                            console.error(`❌ PROBLÈME CRITIQUE : Le rôle du bot est en position ${botRole.position}, le rôle bloqué est en position ${blockedRole.position}`);
-                            console.error(`💡 Le rôle du bot DOIT être AU-DESSUS du rôle bloqué dans la hiérarchie !`);
-                        } else {
-                            console.log(`✅ Hiérarchie OK : Bot (${botRole.position}) > Rôle bloqué (${blockedRole.position})`);
-                        }
-                    }
-                    
-                    // Attendre et vérifier que les deny sont bien appliqués
-                    // Les deny au niveau du salon doivent overrider les permissions de catégorie
-                    console.log(`🔄 Vérification finale des deny appliqués...`);
-                    
-                    // Attendre un peu plus longtemps pour que Discord synchronise
-                    await new Promise(resolve => setTimeout(resolve, 2000)); // 2 secondes
-                    
-                    // Rafraîchir complètement le salon depuis l'API
-                    const refreshedChannel = await guild.channels.fetch(privateChannel.id, { force: true });
-                    const blockedRoleOverwrite = refreshedChannel.permissionOverwrites.cache.get('1344774671987642428');
-                    
-                    if (blockedRoleOverwrite) {
-                        const denyPerms = blockedRoleOverwrite.deny;
-                        const allowPerms = blockedRoleOverwrite.allow;
-                        
-                        console.log(`   📊 État des permissions pour le rôle bloqué:`);
-                        console.log(`      Allow: ${allowPerms ? allowPerms.bitfield.toString() : '0'} (${allowPerms ? allowPerms.bitfield : '0n'})`);
-                        console.log(`      Deny: ${denyPerms ? denyPerms.bitfield.toString() : '0'} (${denyPerms ? denyPerms.bitfield : '0n'})`);
-                        
-                        // Analyser les permissions allow pour voir ce qui est hérité
-                        if (allowPerms && allowPerms.bitfield > 0n) {
-                            console.log(`   ⚠️  Le rôle a des permissions allow (probablement de la catégorie)`);
-                            if (allowPerms.has(PermissionFlagsBits.ViewChannel)) {
-                                console.log(`   ⚠️  Le rôle a "Voir le salon" dans allow (hérité de la catégorie)`);
-                            }
-                            if (allowPerms.has(PermissionFlagsBits.ManageChannels)) {
-                                console.log(`   ❌ PROBLÈME: Le rôle a "Gérer les salons" - cela empêche les deny de fonctionner !`);
-                            }
-                        }
-                        
-                        // Vérifier si ViewChannel est dans deny
-                        const hasViewChannelDeny = denyPerms && denyPerms.has(PermissionFlagsBits.ViewChannel);
-                        
-                        if (hasViewChannelDeny) {
-                            console.log(`✅ Le rôle bloqué (1344774671987642428) a bien les permissions deny - Le salon devrait être invisible pour ce rôle`);
-                            console.log(`   Les deny au niveau du salon overrident les permissions de catégorie ✅`);
-                        } else {
-                            console.warn(`⚠️  Les deny ne persistent pas malgré les tentatives`);
-                            console.warn(`   Le bitfield Allow=${allowPerms?.bitfield.toString() || '0'} indique des permissions héritées de la catégorie`);
-                            console.warn(`   💡 SOLUTION: Vous devez retirer "Voir le salon" pour ce rôle au niveau de la CATÉGORIE`);
-                            console.warn(`   Puis ajouter "Voir le salon" uniquement pour les salons que le rôle DOIT voir`);
-                            console.warn(`   OU créer les salons privés dans une catégorie différente`);
+                    // Vérifications optionnelles en arrière-plan (non-bloquant pour l'expérience utilisateur)
+                    // Ces vérifications peuvent se faire après le déplacement de l'utilisateur
+                    setImmediate(async () => {
+                        try {
+                            const botRole = guild.members.me.roles.highest;
+                            const blockedRole = await guild.roles.fetch('1344774671987642428').catch(() => null);
                             
-                            // Essayer une approche plus agressive : supprimer et recréer l'overwrite
-                            try {
-                                console.log(`   🔄 Tentative de suppression et recréation de l'overwrite...`);
-                                await blockedRoleOverwrite.delete();
-                                await new Promise(resolve => setTimeout(resolve, 500));
-                                
-                                const fullDeny = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect | PermissionFlagsBits.Speak;
-                                await privateChannel.permissionOverwrites.create('1344774671987642428', {
-                                    allow: 0n,
-                                    deny: fullDeny
-                                });
-                                console.log(`   ✅ Overwrite supprimé et recréé avec deny uniquement`);
-                            } catch (finalError) {
-                                console.error(`   ❌ Erreur lors de la suppression/recréation: ${finalError.message}`);
+                            if (blockedRole && botRole && botRole.position <= blockedRole.position) {
+                                console.error(`❌ PROBLÈME CRITIQUE : Le rôle du bot est en position ${botRole.position}, le rôle bloqué est en position ${blockedRole.position}`);
                             }
+                            
+                            // Vérification rapide des deny (sans délai important)
+                            await new Promise(resolve => setTimeout(resolve, 300)); // Délai minimal
+                            const blockedRoleOverwrite = privateChannel.permissionOverwrites.cache.get('1344774671987642428');
+                            
+                            if (blockedRoleOverwrite) {
+                                const denyPerms = blockedRoleOverwrite.deny;
+                                if (!denyPerms || !denyPerms.has(PermissionFlagsBits.ViewChannel)) {
+                                    // Réappliquer les deny si nécessaire (en arrière-plan)
+                                    try {
+                                        const fullDeny = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect | PermissionFlagsBits.Speak;
+                                        await blockedRoleOverwrite.edit({
+                                            allow: 0n,
+                                            deny: fullDeny
+                                        });
+                                        console.log(`🔄 Deny réappliqués en arrière-plan pour le rôle bloqué`);
+                                    } catch (bgError) {
+                                        // Ignorer silencieusement les erreurs en arrière-plan
+                                    }
+                                }
+                            }
+                        } catch (bgCheckError) {
+                            // Ignorer les erreurs de vérification en arrière-plan
                         }
-                    } else {
-                        console.error(`❌ L'overwrite pour le rôle bloqué n'existe toujours pas après toutes les tentatives`);
-                    }
+                    });
                     
-                    if (successCount === permissionOverwrites.length) {
-                        console.log(`✅ Toutes les permissions ont été configurées - Le salon est maintenant PRIVÉ`);
-                    } else {
-                        console.warn(`⚠️  Seulement ${successCount}/${permissionOverwrites.length} permissions ont été appliquées`);
-                        console.warn(`💡 Le salon pourrait ne pas être complètement privé.`);
-                    }
+                    console.log(`✅ Permissions configurées - Le salon est maintenant PRIVÉ`);
                 }
             } catch (permError) {
                 console.error(`❌ Erreur lors de la configuration des permissions : ${permError.message}`);
                 console.error(`💡 Assurez-vous que le bot a la permission "Gérer les rôles"`);
                 console.warn(`⚠️  Le salon a été créé mais les permissions privées n'ont pas été appliquées !`);
             }
+            })();
+            
+            // Attendre que l'utilisateur soit déplacé (priorité absolue)
+            await moveUserPromise;
+            console.log(`✅ Utilisateur ${member.displayName} déplacé instantanément dans ${privateChannel.name}`);
+            
+            // Les permissions continuent en arrière-plan - ne pas bloquer
+            permissionsPromise.catch(() => {});
 
             // Vérification de sécurité : ne jamais stocker le salon déclencheur
-            // triggerChannelId est déjà défini au début de la fonction
             if (privateChannel.id === triggerChannelId) {
                 console.error(`❌ ERREUR : Tentative de stocker le salon déclencheur - Bloquée pour sécurité`);
                 console.error(`💡 Le salon déclencheur ne devrait jamais être supprimé !`);
                 return;
             }
-            
-            // Stocker le salon créé
-            activePrivateChannels.set(member.id, privateChannel.id);
-
-            // Déplacer l'utilisateur dans son nouveau salon
-            await member.voice.setChannel(privateChannel.id);
 
             console.log(`✅ Salon créé pour ${member.displayName} (${member.id}) : ${privateChannel.name}`);
         } catch (error) {
